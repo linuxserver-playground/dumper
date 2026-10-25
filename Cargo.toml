@@ -1,0 +1,20 @@
+[package]
+name = "dumper"
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-only"
+description = "Extracts metadata from a container during a build, for the hub and the website"
+repository = "https://github.com/linuxserver-playground/dumper"
+publish = false
+
+[dependencies]
+flate2 = "1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+strip = true
+panic = "abort"

@@ -1,0 +1,72 @@
+# On a v<version> tag: static musl builds on native runners, checksums, and the GitHub Release with the
+# CHANGELOG.md section as its notes. The workflows fetch releases/latest, so publishing is going live.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - { runner: ubuntu-24.04, target: x86_64-unknown-linux-musl, asset: dumper-x86_64 }
+          - { runner: ubuntu-24.04-arm, target: aarch64-unknown-linux-musl, asset: dumper-aarch64 }
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - name: Set up Rust
+        run: ${GITHUB_WORKSPACE}/.github/rust.sh "${TARGET}"
+        env:
+          TARGET: ${{ matrix.target }}
+      - name: Test and build
+        run: |
+          set -euo pipefail
+          cargo test --locked
+          cargo build --locked --release --target "${TARGET}"
+          mkdir -p dist
+          cp "target/${TARGET}/release/dumper" "dist/${ASSET}"
+          file "dist/${ASSET}" | tee /dev/stderr | grep -q 'static' || { echo "::error::${ASSET} is not static"; exit 1; }
+          version=$("dist/${ASSET}" version)
+          [[ "${version}" == "dumper ${GITHUB_REF_NAME#v}" ]] || { echo "::error::binary says '${version}', tag is ${GITHUB_REF_NAME}"; exit 1; }
+        env:
+          TARGET: ${{ matrix.target }}
+          ASSET: ${{ matrix.asset }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.asset }}
+          path: dist/${{ matrix.asset }}
+          if-no-files-found: error
+
+  release:
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v5
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Publish the release
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          awk -v v="${version}" '$0 == "## " v {on=1; next} /^## / {on=0} on' CHANGELOG.md > notes.md
+          [[ -s notes.md ]] || { echo "::error::CHANGELOG.md has no section '## ${version}'"; exit 1; }
+          chmod +x dist/dumper-*
+          (cd dist && sha256sum dumper-* > sha256sums.txt && cat sha256sums.txt)
+          gh release create "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" --verify-tag \
+            --title "${GITHUB_REF_NAME}" --notes-file notes.md dist/dumper-* dist/sha256sums.txt
+        env:
+          GH_TOKEN: ${{ github.token }}
